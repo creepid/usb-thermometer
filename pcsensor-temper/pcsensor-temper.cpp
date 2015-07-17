@@ -18,19 +18,21 @@
 #define VENDOR_ID  0x0c45
 #define PRODUCT_ID 0x7401
 
+#define INTERFACE 0x01
+
 const static char uTemperatura[] = { 0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00 };
 const static char uIni1[] = { 0x01, 0x82, 0x77, 0x01, 0x00, 0x00, 0x00, 0x00 };
 const static char uIni2[] = { 0x01, 0x86, 0xff, 0x01, 0x00, 0x00, 0x00, 0x00 };
 
 const static int reqIntLen=8;
 
-static int measureDelay=5000;/* delay in ms */
+static int measureDelay=2000;/* delay in ms */
 const static int timeout=5000; /* timeout in ms */
 
 /* Offset of temperature in read buffer; varies by product */
 static size_t tempOffset;
 
-static int bsalir=1;
+static int bsalir=0;
 static int formato=1;
 static int debug=1;
 static int mrtg=0;
@@ -62,9 +64,13 @@ usb_dev_handle* setup_libusb_access() {
 		return NULL;
 	}
 
-
 	if (usb_set_configuration(lvr_winusb, 0x01) < 0) {
-		printf("Could not set configuration 1\n");
+		printf("Could not set configuration 0\n");
+		return NULL;
+	}
+
+	if (usb_claim_interface(lvr_winusb, INTERFACE) < 0) {
+		printf("Could not claim interface\n");
 		return NULL;
 	}
 
@@ -215,6 +221,7 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	} while (!bsalir);
 
+	usb_release_interface(lvr_winusb, INTERFACE);
 
 	usb_close(lvr_winusb); 
 
