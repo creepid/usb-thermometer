@@ -10,6 +10,8 @@
 #include <signal.h>
 #include <stdio.h>
 
+#define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
+
 #define VERSION "0.0.1"
 
 #define VENDOR_ID  0x0c45
@@ -18,6 +20,12 @@
 #define INTERFACE1 0x00
 #define INTERFACE2 0x01
 
+const static char uTemperatura[] = { 0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00 };
+const static char uIni1[] = { 0x01, 0x82, 0x77, 0x01, 0x00, 0x00, 0x00, 0x00 };
+const static char uIni2[] = { 0x01, 0x86, 0xff, 0x01, 0x00, 0x00, 0x00, 0x00 };
+
+const static int reqIntLen=8;
+const static int timeout=5000; /* timeout in ms */
 
  /* Offset of temperature in read buffer; varies by product */
 static size_t tempOffset;
@@ -27,17 +35,6 @@ static int seconds=5;
 static int formato=0;
 static int debug=0;
 static int mrtg=0;
-
-/* Even within the same VENDOR_ID / PRODUCT_ID, there are hardware variations
-* which we can detect by reading the USB product ID string. This determines
-* where the temperature offset is stored in the USB read buffer. */
-const static struct product_hw {
-	size_t      offset;
-	const char *id_string;
-} product_ids[] = {
-	{ 4, "TEMPer1F_V1.3" },
-	{ 2, 0 } /* default offset is 2 */
-};
 
 void ex_program(int sig) {
 	bsalir=1;
@@ -72,43 +69,7 @@ usb_dev_handle* setup_libusb_access() {
 		return NULL;
 	}
 
-
-	// Microdia tiene 2 interfaces
-	if (usb_claim_interface(lvr_winusb, INTERFACE1) < 0) {
-		printf("Could not claim interface\n");
-		return NULL;
-	}
-
-	if (usb_claim_interface(lvr_winusb, INTERFACE2) < 0) {
-		printf("Could not claim interface\n");
-		return NULL;
-	}
-
 	return lvr_winusb;
-}
-
-static void read_product_string(usb_dev_handle *handle, struct usb_device *dev)
-{
-	char prodIdStr[256];
-	const struct product_hw *p;
-	int strLen;
-
-	memset(prodIdStr, 0, sizeof(prodIdStr));
-
-	strLen = usb_get_string_simple(handle, dev->descriptor.iProduct, prodIdStr,
-		sizeof(prodIdStr)-1);
-	if (debug) {
-		if (strLen < 0)
-			puts("Couldn't read iProduct string");
-		else
-			printf("iProduct: %s\n", prodIdStr);
-	}
-
-	for (p = product_ids; p->id_string; ++p) {
-		if (!strncmp(p->id_string, prodIdStr, sizeof(prodIdStr)))
-			break;
-	}
-	tempOffset = p->offset;
 }
 
 usb_dev_handle *find_lvr_winusb() {
@@ -117,8 +78,6 @@ usb_dev_handle *find_lvr_winusb() {
 
 	for (bus = usb_busses; bus; bus = bus->next) {
 		for (dev = bus->devices; dev; dev = dev->next) {
-
-			printf("Device with Vendor Id: %x and Product Id: %x found.\n", dev->descriptor.idVendor, dev->descriptor.idProduct);
 
 			if (dev->descriptor.idVendor == VENDOR_ID && 
 				dev->descriptor.idProduct == PRODUCT_ID ) {
@@ -131,7 +90,6 @@ usb_dev_handle *find_lvr_winusb() {
 						printf("Could not open USB device\n");
 						return NULL;
 					}
-					read_product_string(handle, dev);
 					return handle;
 			}
 		}
@@ -139,11 +97,82 @@ usb_dev_handle *find_lvr_winusb() {
 	return NULL;
 }
 
+void ini_control_transfer(usb_dev_handle *dev) {
+	int r,i;
+	char question[] = { 0x01,0x01 };
+	r = usb_control_msg(dev, 0x21, 0x09, 0x0201, 0x00, (char *) question, 2, timeout);
+	if( r < 0 )
+	{
+		perror("USB init control write");
+	}
+	if(debug) {
+		for (i=0;i<reqIntLen; i++) printf("%02x ",question[i] & 0xFF);
+		printf("\n");
+	}
+}
+
+void control_transfer(usb_dev_handle *dev, const char *pquestion) {
+	int r,i;
+	char question[reqIntLen];
+	memcpy(question, pquestion, sizeof question);
+	r = usb_control_msg(dev, 0x21, 0x09, 0x0200, 0x01, (char *) question, reqIntLen, timeout);
+	if( r < 0 )
+	{
+		perror("USB control write");
+	}
+	if(debug) {
+		for (i=0;i<reqIntLen; i++) printf("%02x ",question[i] & 0xFF);
+		printf("\n");
+	}
+}
+
+void interrupt_read(usb_dev_handle *dev) {
+	int r,i;
+	char answer[reqIntLen];
+	bzero(answer, reqIntLen);
+	r = usb_interrupt_read(dev, 0x82, answer, reqIntLen, timeout);
+	if( r != reqIntLen )
+	{
+		perror("USB interrupt read");
+	}
+	if(debug) {
+		for (i=0;i<reqIntLen; i++) printf("%02x ",answer[i] & 0xFF);
+		printf("\n");
+	}
+}
+
+void interrupt_read_temperatura(usb_dev_handle *dev, float *tempC) {
+ 
+    int r,i, temperature;
+    unsigned char answer[reqIntLen];
+    bzero(answer, reqIntLen);
+    
+    r = usb_interrupt_read(dev, 0x82, answer, reqIntLen, timeout);
+    if( r != reqIntLen )
+    {
+          perror("USB interrupt read");
+    }
+
+
+    if(debug) {
+      for (i=0;i<reqIntLen; i++) printf("%02x ",answer[i]  & 0xFF);
+    
+      printf("\n");
+    }
+    
+    temperature = (answer[3] & 0xFF) + (answer[2] << 8);
+    *tempC = temperature * (125.0 / 32000.0);
+
+}
+
+
+
 int _tmain(int argc, _TCHAR* argv[])
 {
 	printf("pcsensor version %s\n",VERSION);
 
 	usb_dev_handle *lvr_winusb = NULL;
+	float tempc;
 
 	debug = 1;
 	formato=1;
@@ -154,8 +183,56 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	(void) signal(SIGINT, ex_program);
 
+	ini_control_transfer(lvr_winusb);
 
-	usb_init();
+	control_transfer(lvr_winusb, uTemperatura );
+	interrupt_read(lvr_winusb);
+
+	control_transfer(lvr_winusb, uIni1 );
+	interrupt_read(lvr_winusb);
+
+	control_transfer(lvr_winusb, uIni2 );
+	interrupt_read(lvr_winusb);
+	interrupt_read(lvr_winusb);
+
+	 do {
+           control_transfer(lvr_winusb, uTemperatura );
+           interrupt_read_temperatura(lvr_winusb, &tempc);
+
+
+           t = time(NULL);
+           local = localtime(&t);
+
+   
+                  printf("%.2f\n", tempc);
+                  printf("%.2f\n", tempc);
+ 
+          
+           } else {
+              if (formato==2) {
+                  printf("%.2f\n", (9.0 / 5.0 * tempc + 32.0));
+              } else if (formato==1) {
+                  printf("%.2f\n", tempc);
+              } else {
+				  printf("%04d/%02d/%02d %02d:%02d:%02d ", 
+							  local->tm_year +1900, 
+							  local->tm_mon + 1, 
+							  local->tm_mday,
+							  local->tm_hour,
+							  local->tm_min,
+							  local->tm_sec);
+
+				  printf("Temperature %.2fF %.2fC\n", (9.0 / 5.0 * tempc + 32.0), tempc);
+              }
+           }
+           
+           if (!bsalir)
+              sleep(seconds);
+     } while (!bsalir);
+                                       
+     
+     usb_close(lvr_winusb); 
+	
 	return 0;
 }
 
