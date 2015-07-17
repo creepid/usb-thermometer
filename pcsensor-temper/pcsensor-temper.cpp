@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
+#include "windows.h" 
 
 #define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
 
@@ -16,24 +17,22 @@
 
 #define VENDOR_ID  0x0c45
 #define PRODUCT_ID 0x7401
- 
-#define INTERFACE1 0x00
-#define INTERFACE2 0x01
 
 const static char uTemperatura[] = { 0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00 };
 const static char uIni1[] = { 0x01, 0x82, 0x77, 0x01, 0x00, 0x00, 0x00, 0x00 };
 const static char uIni2[] = { 0x01, 0x86, 0xff, 0x01, 0x00, 0x00, 0x00, 0x00 };
 
 const static int reqIntLen=8;
+
+static int measureDelay=5000;/* delay in ms */
 const static int timeout=5000; /* timeout in ms */
 
- /* Offset of temperature in read buffer; varies by product */
+/* Offset of temperature in read buffer; varies by product */
 static size_t tempOffset;
 
 static int bsalir=1;
-static int seconds=5;
-static int formato=0;
-static int debug=0;
+static int formato=1;
+static int debug=1;
 static int mrtg=0;
 
 void ex_program(int sig) {
@@ -130,7 +129,7 @@ void interrupt_read(usb_dev_handle *dev) {
 	int r,i;
 	char answer[reqIntLen];
 	bzero(answer, reqIntLen);
-	r = usb_interrupt_read(dev, 0x82, answer, reqIntLen, timeout);
+	r = usb_interrupt_read(dev, 0x82, (char *) answer, reqIntLen, timeout);
 	if( r != reqIntLen )
 	{
 		perror("USB interrupt read");
@@ -142,44 +141,43 @@ void interrupt_read(usb_dev_handle *dev) {
 }
 
 void interrupt_read_temperatura(usb_dev_handle *dev, float *tempC) {
- 
-    int r,i, temperature;
-    unsigned char answer[reqIntLen];
-    bzero(answer, reqIntLen);
-    
-    r = usb_interrupt_read(dev, 0x82, answer, reqIntLen, timeout);
-    if( r != reqIntLen )
-    {
-          perror("USB interrupt read");
-    }
 
+	int r,i, temperature;
+	unsigned char answer[reqIntLen];
+	bzero(answer, reqIntLen);
 
-    if(debug) {
-      for (i=0;i<reqIntLen; i++) printf("%02x ",answer[i]  & 0xFF);
-    
-      printf("\n");
-    }
-    
-    temperature = (answer[3] & 0xFF) + (answer[2] << 8);
-    *tempC = temperature * (125.0 / 32000.0);
+	r = usb_interrupt_read(dev, 0x82, (char *) answer, reqIntLen, timeout);
+	if( r != reqIntLen )
+	{
+		perror("USB interrupt read");
+	}
 
+	if(debug) {
+		for (i=0;i<reqIntLen; i++) printf("%02x ",answer[i]  & 0xFF);
+
+		printf("\n");
+	}
+
+	/* Temperature in C is a 16-bit signed fixed-point number, big-endian */
+	temperature = (answer[3] & 0xFF) + (answer[2] << 8);
+	*tempC = temperature * (125.0f / 32000.0f);
 }
 
 
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-	printf("pcsensor version %s\n",VERSION);
+	printf("pcsensor version %s\n", VERSION);
 
 	usb_dev_handle *lvr_winusb = NULL;
 	float tempc;
 
-	debug = 1;
-	formato=1;
+	struct tm *local;
+	time_t t;
 
-	 if ((lvr_winusb = setup_libusb_access()) == NULL) {
-         exit(EXIT_FAILURE);
-     } 
+	if ((lvr_winusb = setup_libusb_access()) == NULL) {
+		exit(EXIT_FAILURE);
+	} 
 
 	(void) signal(SIGINT, ex_program);
 
@@ -195,44 +193,31 @@ int _tmain(int argc, _TCHAR* argv[])
 	interrupt_read(lvr_winusb);
 	interrupt_read(lvr_winusb);
 
-	 do {
-           control_transfer(lvr_winusb, uTemperatura );
-           interrupt_read_temperatura(lvr_winusb, &tempc);
+	do {
+		control_transfer(lvr_winusb, uTemperatura );
+		interrupt_read_temperatura(lvr_winusb, &tempc);
+
+		t = time(NULL);
+		local = localtime(&t);
+
+		printf("%04d/%02d/%02d %02d:%02d:%02d ", 
+			local->tm_year + 1900, 
+			local->tm_mon + 1, 
+			local->tm_mday,
+			local->tm_hour,
+			local->tm_min,
+			local->tm_sec);
+
+		printf("Temperature %.2fC\n", tempc);
+
+		if (!bsalir)
+			Sleep(measureDelay);
+
+	} while (!bsalir);
 
 
-           t = time(NULL);
-           local = localtime(&t);
+	usb_close(lvr_winusb); 
 
-   
-                  printf("%.2f\n", tempc);
-                  printf("%.2f\n", tempc);
- 
-          
-           } else {
-              if (formato==2) {
-                  printf("%.2f\n", (9.0 / 5.0 * tempc + 32.0));
-              } else if (formato==1) {
-                  printf("%.2f\n", tempc);
-              } else {
-				  printf("%04d/%02d/%02d %02d:%02d:%02d ", 
-							  local->tm_year +1900, 
-							  local->tm_mon + 1, 
-							  local->tm_mday,
-							  local->tm_hour,
-							  local->tm_min,
-							  local->tm_sec);
-
-				  printf("Temperature %.2fF %.2fC\n", (9.0 / 5.0 * tempc + 32.0), tempc);
-              }
-           }
-           
-           if (!bsalir)
-              sleep(seconds);
-     } while (!bsalir);
-                                       
-     
-     usb_close(lvr_winusb); 
-	
 	return 0;
 }
 
